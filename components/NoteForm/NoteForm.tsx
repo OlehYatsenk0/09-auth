@@ -1,65 +1,97 @@
-"use client";
+'use client';
 
-import { useRouter } from "next/navigation";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, ChangeEvent, FormEvent } from "react";
-import { createNote } from "@/lib/api";
-import { useNoteStore } from "@/lib/store/noteStore";
 import css from "./NoteForm.module.css";
+import * as Yup from "yup";
+import { useRouter } from "next/navigation";
+import type { NoteTag } from "../../types/note";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { createNote } from "../../lib/api/clientApi";
+import { useNoteDraft } from "@/lib/store/noteStore";
 
-export default function NoteForm() {
+const validationSchema = Yup.object({
+  title: Yup.string()
+    .min(3, "Title must be at least 3 characters")
+    .max(50, "Title must be at most 50 characters")
+    .required("Title is required"),
+  content: Yup.string().max(500, "Content must be at most 500 characters"),
+  tag: Yup.mixed<NoteTag>()
+    .oneOf(
+      ["Todo", "Work", "Personal", "Meeting", "Shopping"],
+      "Invalid tag value",
+    )
+    .required("Tag is required"),
+});
+
+interface NewNotePayload {
+  title: string;
+  content: string;
+  tag: NoteTag;
+}
+
+// 👇 ДОДАЛИ ПРОПСИ
+interface NoteFormProps {
+  tags: NoteTag[];
+}
+
+export default function NoteForm({ tags }: NoteFormProps) {
   const router = useRouter();
-  const qc = useQueryClient();
-  const { draft, setDraft, clearDraft } = useNoteStore();
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const onCancel = () => router.back();
+  const queryClient = useQueryClient();
+  const { draft, setDraft, clearDraft } = useNoteDraft();
 
-  const mutation = useMutation({
+  const createMutation = useMutation({
     mutationFn: createNote,
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["notes"] });
+      queryClient.invalidateQueries({ queryKey: ["notes"] });
+      clearDraft();
+      onCancel();
     },
   });
 
   const handleChange = (
-    e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+    event: React.ChangeEvent<
+      HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+    >,
   ) => {
-    const { name, value } = e.target;
-    setDraft({ [name]: value });
+    setDraft({
+      ...draft,
+      [event.target.name]: event.target.value,
+    });
   };
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setIsSubmitting(true);
+  const onCreate = async (formData: FormData) => {
+    const noteData: NewNotePayload = {
+      title: formData.get("title") as string,
+      content: formData.get("content") as string,
+      tag: formData.get("tag") as NoteTag,
+    };
+
     try {
-      await mutation.mutateAsync({
-        title: draft.title,
-        content: draft.content,
-        tag: draft.tag,
-      });
-      clearDraft();        // очистити draft лише після успішного створення
-      router.back();       // повернутися на попередню сторінку
-    } catch (err) {
-      console.error("Failed to create note:", err);
-    } finally {
-      setIsSubmitting(false);
+      await validationSchema.validate(noteData, { abortEarly: false });
+      await createMutation.mutateAsync(noteData);
+    } catch (validationError) {
+      if (validationError instanceof Yup.ValidationError) {
+        const errorMessages = validationError.inner.map(
+          (error) => error.message,
+        );
+        alert(`${errorMessages.join("\n")}`);
+      } else {
+        alert("Failed to create note. Please try again.");
+      }
     }
   };
 
-  const handleCancel = () => {
-    router.back(); // draft НЕ очищаємо — так вимагає ТЗ
-  };
-
   return (
-    <form onSubmit={handleSubmit} className={css.form}>
+    <form className={css.form} action={onCreate}>
       <div className={css.formGroup}>
         <label htmlFor="title">Title</label>
         <input
           id="title"
+          type="text"
           name="title"
-          value={draft.title}
-          onChange={handleChange}
           className={css.input}
-          required
+          onChange={handleChange}
+          defaultValue={draft?.title}
         />
       </div>
 
@@ -68,46 +100,41 @@ export default function NoteForm() {
         <textarea
           id="content"
           name="content"
-          value={draft.content}
-          onChange={handleChange}
+          rows={8}
           className={css.textarea}
-          rows={6}
-          required
+          onChange={handleChange}
+          defaultValue={draft?.content}
         />
       </div>
 
       <div className={css.formGroup}>
         <label htmlFor="tag">Tag</label>
         <select
-  id="tag"
-  name="tag"
-  value={draft.tag}
-  onChange={handleChange}
-  className={css.select}
->
-  <option value="Work">Work</option>
-  <option value="Personal">Personal</option>
-  <option value="Todo">Todo</option>
-  <option value="Meeting">Meeting</option>
-  <option value="Shopping">Shopping</option>
-</select>
+          id="tag"
+          name="tag"
+          className={css.select}
+          onChange={handleChange}
+          defaultValue={draft?.tag}
+        >
+          {/* 👇 Використовуємо теги з бекенда */}
+          {tags.map((tag) => (
+            <option key={tag} value={tag}>
+              {tag}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className={css.actions}>
         <button
           type="button"
           className={css.cancelButton}
-          onClick={handleCancel}
-          disabled={isSubmitting}
+          onClick={onCancel}
         >
           Cancel
         </button>
-        <button
-          type="submit"
-          className={css.submitButton}
-          disabled={isSubmitting}
-        >
-          {isSubmitting ? "Creating..." : "Create note"}
+        <button type="submit" className={css.submitButton}>
+          {createMutation.isPending ? "Creating..." : "Create note"}
         </button>
       </div>
     </form>
